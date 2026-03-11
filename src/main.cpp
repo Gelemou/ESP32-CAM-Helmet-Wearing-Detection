@@ -1,15 +1,38 @@
 #include <Arduino.h>
 #include "esp_camera.h"
+#include "camera_pins.h"
 #include <WiFi.h>
-#include <C:/Users/Gelem/.platformio/packages/framework-arduinoespressif32/libraries/HTTPClient/src/HTTPClient.h>
+#include <HTTPClient.h>
 #include <PubSubClient.h>
 #include <ThingsCloudWiFiManager.h>
 #include <ThingsCloudMQTT.h>
-// const int DHT_PIN = 2;
-// unsigned long lastDhtTime = 0; // 上次读取时间
-// const unsigned long DHT_INTERVAL = 2000; // 每2秒读取一次
-// float temperature = 0.0;
-// float humidity = 0.0;
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h> // ADC采集
+#include <Adafruit_GFX.h> // 显示屏
+#include <Adafruit_SSD1306.h>
+
+// Has PSRAM
+#define CAMERA_MODEL_AI_THINKER 
+
+// I2C引脚配置
+#define I2C_SDA 15
+#define I2C_SCL 14
+
+// OLED显示屏参数
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define OLED_ADDRES 0x3c
+
+// 创建实例连接
+Adafruit_ADS1015 ads; // ADS1015
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// wifi账号密码
+const char *ssid = "";
+const char *password = "";
+
+// MQTT连接
 #define THINGSCLOUD_MQTT_HOST "bj-2-mqtt.iot-api.com"
 #define THINGSCLOUD_DEVICE_ACCESS_TOKEN "4uf8na3exqbwduor"
 #define THINGSCLOUD_PROJECT_KEY "QWn2NFlI9U"
@@ -17,15 +40,6 @@ ThingsCloudMQTT mqtt_client(
     THINGSCLOUD_MQTT_HOST,
     THINGSCLOUD_DEVICE_ACCESS_TOKEN,
     THINGSCLOUD_PROJECT_KEY);
-// 光敏电阻
-const int lightSensorPin = 16;
-
-#define CAMERA_MODEL_AI_THINKER // Has PSRAM
-
-#include "camera_pins.h"
-
-const char *ssid = "";
-const char *password = "";
 
 // const char *mqtt_server = "bj-2-mqtt.iot-api.com";
 // const int mqtt_port = 1883; // MQTT端口
@@ -73,24 +87,8 @@ void pubSensors()
 //     }
 // }
 void startCameraServer();
-
-void setup() {
-    delay(1000);
-    Serial.begin(115200);
-    // 板载LED关闭
-    pinMode(4, OUTPUT);
-    digitalWrite(4, LOW);
-
-    // 初始化adc引脚 IO14
-    //analogReadResolution(12);
-    //analogSetPinAttenuation(lightSensorPin, ADC_11db);
-    // 初始化DHT11
-    // dht.setup(DHT_PIN, DHTesp::DHT11);
-    // Serial.println("DHT11 initialized!");
-    //  允许 SDK 的日志输出
-    mqtt_client.enableDebuggingMessages();
-
-    Serial.setDebugOutput(true);
+void camera_init() {
+    erial.setDebugOutput(true);
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
@@ -121,35 +119,64 @@ void setup() {
         Serial.println("PSRAM not found");
 
     }
-// if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-//                      for larger pre-allocated frame buffer.
+    // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
+    //                      for larger pre-allocated frame buffer.
 
-#if defined(CAMERA_MODEL_ESP_EYE)
-    pinMode(13, INPUT_PULLUP);
-    pinMode(14, INPUT_PULLUP);
-#endif
+    #if defined(CAMERA_MODEL_ESP_EYE)
+        pinMode(13, INPUT_PULLUP);
+        pinMode(14, INPUT_PULLUP);
+    #endif
 
-  // camera init
-    esp_err_t err = esp_camera_init(&config);
-    if (err != ESP_OK) {
-        Serial.printf("Camera init failed with error 0x%x", err);
-        return;
+    // camera init
+        esp_err_t err = esp_camera_init(&config);
+        if (err != ESP_OK) {
+            Serial.printf("Camera init failed with error 0x%x", err);
+            return;
+        }
+
+        sensor_t *s = esp_camera_sensor_get();
+        // initial sensors are flipped vertically and colors are a bit saturated
+        if (s->id.PID == OV2640_PID) {
+            s->set_vflip(s, 1); // flip it back
+            s->set_brightness(s, 1); // up the brightness just a bit
+            s->set_saturation(s, -2); // lower the saturation
+        }
+        // drop down frame size for higher initial frame rate
+        s->set_framesize(s, FRAMESIZE_XGA);
+
+    #if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
+        s->set_vflip(s, 1);
+        s->set_hmirror(s, 1);
+    #endif
+}
+void setup() {
+    Serial.begin(115200);
+    // 初始化I2C总线
+    Wire.begin(I2C_SDA, I2C_SCL);
+    // 初始化OLED屏幕
+    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRES)) {
+        Serial.println(F("SSD1306分配失败"))
     }
-
-    sensor_t *s = esp_camera_sensor_get();
-    // initial sensors are flipped vertically and colors are a bit saturated
-    if (s->id.PID == OV2640_PID) {
-        s->set_vflip(s, 1); // flip it back
-        s->set_brightness(s, 1); // up the brightness just a bit
-        s->set_saturation(s, -2); // lower the saturation
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0,0);
+    display.println(F("OLED初始化成功"));
+    display.display();
+    delay(1000);
+    //初始化ADS1015，显式传入地址0x48
+    if (!ads.begin(0x48, &Wire)) {
+        Serial.println("ADS1015初始化失败");
+    } else {
+        Serial.println("ADS1015初始化成功");
     }
-    // drop down frame size for higher initial frame rate
-    s->set_framesize(s, FRAMESIZE_XGA);
+    // 板载LED关闭
+    pinMode(4, OUTPUT);
+    digitalWrite(4, LOW);
+    //  允许 SDK 的日志输出
+    mqtt_client.enableDebuggingMessages();
 
-#if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
-    s->set_vflip(s, 1);
-    s->set_hmirror(s, 1);
-#endif
+    camera_init();
 
     WiFi.begin(ssid, password);
 
@@ -178,21 +205,27 @@ const int interval = 500; // 0.5s
 unsigned long lastMsgTime = 0;
 const long mqttInterval = 2000;  // 2s
 void loop() {
-    // 读取DHT11
-    // if (now - lastDhtTime >= DHT_INTERVAL) {
-    //     lastDhtTime = now;
-    //     TempAndHumidity data = dht.getTempAndHumidity();
-    //     if (dht.getStatus() == 0) {
-    //         temperature = data.temperature;
-    //         humidity = data.humidity;
-    //         Serial.println("Temp: " + String(temperature, 1) + "°C, Hum: " + String(humidity, 1) + "%");
-    //     } else {
-    //         Serial.println("DHT11 Error: " + String(dht.getStatusString()));
-    //     }
-    // }
-    // 读取光敏电阻传感器
-    // int adcValue = analogRead(lightSensorPin);
-    // int brightness = map(adcValue, 0, 4095, 0, 100);
+    int16_t adc_0 = ads.readADC_SingleEnded(0);
+    //计算电压值(根据默认增益计算，每位3mV)
+    float voltage = ads.computeVolts(adc0);
+    // 串口打印
+    Serial.print("光敏电阻电压:");
+    Serial.print(voltage);
+    //OLED屏幕更新显示
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.setTextSize(1);
+    display.println("ESP32-CAM I2C Monitor");
+    display.println("-----------------");
+    display.setTextSize(2);
+    display.print("ADC:");
+    display.println(adc0);
+    display.setTextSize(1);
+    display.print("Volts:");
+    display.print(voltage);
+    display.println("V");
+    display.display();
+
     // 连接MQTT服务器
     mqtt_client.loop();
     // if (!mqtt_client.connect("esp32-cam")) reconnect();
