@@ -24,6 +24,12 @@
 #define OLED_RESET -1
 #define OLED_ADDRES 0x3c
 
+// RCWL雷达代码
+#define RCWL_PIN 13
+bool RCWLState = false;
+void RCWLChangeState() {
+    RCWLState = true;
+}
 // 创建实例连接
 Adafruit_ADS1015 ads; // ADS1015
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -151,6 +157,11 @@ void camera_init() {
 }
 void setup() {
     Serial.begin(115200);
+    
+    // 初始化RCWL引脚
+    pinMode(RCWL_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(RCWL_PIN), RCWLChangeState, RISING); // 中断函数，当RCWL由低变高时触发
+    Serial.println("RCWL-0516已启动");
     // 初始化I2C总线
     Wire.begin(I2C_SDA, I2C_SCL);
     // 初始化OLED屏幕
@@ -205,6 +216,13 @@ const int interval = 500; // 0.5s
 unsigned long lastMsgTime = 0;
 const long mqttInterval = 2000;  // 2s
 void loop() {
+    if (RCWLState) {
+        Serial.println("--检测到人员移动--");
+
+
+        RCWLState = false;
+        delay(2000);
+    }
     int16_t adc_0 = ads.readADC_SingleEnded(0);
     //计算电压值(根据默认增益计算，每位3mV)
     float voltage = ads.computeVolts(adc0);
