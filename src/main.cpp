@@ -32,6 +32,9 @@ void RCWLChangeState()
 {
     RCWLState = true;
 }
+
+// 板载LED引脚配置
+#define LED_PIN 4
 // 创建实例连接
 Adafruit_ADS1015 ads; // ADS1015
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -172,14 +175,21 @@ void setup()
     if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRES))
     {
         Serial.println("SSD1306分配失败");
+    } 
+    else
+    {
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(0, 0);
+        display.println(F("OLED初始化成功"));
+        display.display();
+        delay(1000);
     }
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println(F("OLED初始化成功"));
-    display.display();
-    delay(1000);
+
+    // 初始化LED PWM 5kHz 10Bit(0~1023)
+    ledcSetup(0, 5000, 10);
+    ledcAttachPin(LED_PIN, 0);
     // 初始化ADS1015，显式传入地址0x48
     if (!ads.begin(0x48, &Wire))
     {
@@ -190,8 +200,8 @@ void setup()
         Serial.println("ADS1015初始化成功");
     }
     // 板载LED关闭
-    pinMode(4, OUTPUT);
-    digitalWrite(4, LOW);
+    // pinMode(LED_PIN, OUTPUT);
+    // digitalWrite(LED_PIN, LOW);
     //  允许 SDK 的日志输出
     mqtt_client.enableDebuggingMessages();
     camera_init();
@@ -231,12 +241,22 @@ void loop()
         RCWLState = false;
         delay(2000);
     }
+    // 读取ADS1015原始值和电压值
     int16_t adc_0 = ads.readADC_SingleEnded(0);
-    // 计算电压值(根据默认增益计算，每位3mV)
-    float voltage = ads.computeVolts(adc_0);
-    // 串口打印
-    Serial.print("光敏电阻电压:");
-    Serial.print(voltage);
+    float voltage = ads.computeVolts(adc_0); // 计算电压值(根据默认增益计算，每位3mV)
+    // 补光控制逻辑
+    int16_t dutyCycle = 0;
+    if (voltage < 1.0) {
+        // 1V关闭 0.2V全亮
+        dutyCycle = map(voltage * 100, 20, 100, 1023, 0);
+        dutyCycle = constrain(dutyCycle, 0, 1023); // 限幅
+    }
+    else 
+    {
+        dutyCycle = 0;
+    }
+    ledcWrite(0, dutyCycle);
+
     // OLED屏幕更新显示
     display.clearDisplay();
     display.setCursor(0, 0);
