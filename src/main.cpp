@@ -39,6 +39,8 @@ void RCWLChangeState()
 Adafruit_ADS1015 ads; // ADS1015
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+// 光敏电压
+float voltage;
 // MQTT连接
 #define THINGSCLOUD_MQTT_HOST "bj-2-mqtt.iot-api.com"
 #define THINGSCLOUD_DEVICE_ACCESS_TOKEN "4uf8na3exqbwduor"
@@ -94,10 +96,11 @@ void pubSensors()
 //      }
 //  }
 void startCameraServer();
+camera_config_t config;
 void camera_init()
 {
     Serial.setDebugOutput(true);
-    camera_config_t config;
+
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
     config.pin_d0 = Y2_GPIO_NUM;
@@ -161,31 +164,11 @@ void camera_init()
     s->set_hmirror(s, 1);
 #endif
 }
-void setup()
+void sensorInit()
 {
-    Serial.begin(115200);
-    // 板载LED关闭
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
     // 初始化RCWL引脚
     pinMode(RCWL_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(RCWL_PIN), RCWLChangeState, RISING); // 中断函数，当RCWL由低变高时触发
     Serial.println("RCWL-0515已启动");
-    // pinMode(14, OUTPUT); // SCL
-    // pinMode(15, OUTPUT); // SDA
-    // for (int i = 0; i < 9; i++)
-    // {
-    //     digitalWrite(14, LOW);
-    //     delayMicroseconds(10);
-    //     digitalWrite(14, HIGH);
-    //     delayMicroseconds(10);
-    // }
-    // digitalWrite(15, LOW);
-    // delayMicroseconds(10);
-    // digitalWrite(14, HIGH);
-    // delayMicroseconds(10);
-    // digitalWrite(15, HIGH);
-    // delay(200);
     // 初始化I2C总线
     Wire.begin(I2C_SDA, I2C_SCL);
     // Wire.setClock(100000);
@@ -208,6 +191,7 @@ void setup()
     else
     {
         Serial.println("OLED初始化成功");
+        display.clearDisplay();
     }
     // I2C自检
     Serial.println("Scanning I2C...");
@@ -220,14 +204,39 @@ void setup()
             Serial.println(address, HEX);
         }
     }
+}
+void OLED_Show()
+{
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    // WiFi连接状态
+    display.print("WiFi:");
+    display.println(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
+    // RCWL雷达状态
+    display.print("Motion:");
+    display.println(digitalRead(RCWL_PIN) == HIGH ? "Detected!" : "Searching");
+    // 光敏电阻电压值
+    display.print("voltage:");
+    display.println(voltage);
+    display.display();
+    delay(500);
+}
+void setup()
+{
+    Serial.begin(115200);
+    // 板载LED关闭
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+
     // 初始化LED PWM 5kHz 10Bit(0~1023)
     // ledcSetup(0, 5000, 10);
     // ledcAttachPin(LED_PIN, 0);
 
     //  允许 SDK 的日志输出
     // mqtt_client.enableDebuggingMessages();
-    // camera_init();
-
+    camera_init();
     WiFi.begin(ssid, password);
 
     while (WiFi.status() != WL_CONNECTED)
@@ -237,83 +246,71 @@ void setup()
     }
     Serial.println("");
     Serial.println("WiFi connected");
+
     // 开启摄像头
-    // startCameraServer();
+    startCameraServer();
 
     Serial.print("Camera Ready! Use 'http://");
     Serial.print(WiFi.localIP());
     Serial.println("' to connect");
-
+    sensorInit();
     // 设置MQTT服务器和回调函数
     // mqtt_client.setServer(mqtt_server, mqtt_port);
     // mqtt_client.setCallback(callback);
 }
-// 控制拍照频率
+// 控制OLED频率 500ms
+unsigned long lastDisplayTime = 0;
+const int displayInterval = 500;
+// 控制拍照频率 500ms
 unsigned long lastTime = 0;
-const int interval = 500; // 0.5s
-// 控制mqtt发送频率
+const int interval = 500;
+// 控制mqtt发送频率 2s
 unsigned long lastMsgTime = 0;
-const long mqttInterval = 2000; // 2s
+const int mqttInterval = 2000;
+// 控制RCWL检测频率
+unsigned long lastCheck = 0;
+const int checkInterval = 100;
 void loop()
 {
-    if (RCWLState)
+    unsigned long now = millis();
+    if (millis() - lastCheck >= checkInterval)
     {
-        Serial.println("--检测到人员移动--");
+        RCWLState = digitalRead(RCWL_PIN);
+        if (RCWLState)
+        {
+            Serial.println("--检测到人员移动--");
 
-        RCWLState = false;
-        delay(2000);
+            RCWLState = false;
+        }
     }
-    // 读取ADS1015原始值和电压值
+
+    // // 读取ADS1015原始值和电压值
     int16_t adc_0 = ads.readADC_SingleEnded(0);
-    float voltage = ads.computeVolts(adc_0); // 计算电压值(根据默认增益计算，每位3mV)
-    Serial.printf("Raw: %d, Volts: %.2fV\n", adc_0, voltage);
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.printf("V: %.2fV", voltage);
-    display.display(); // 没这句屏幕绝对不亮！
-
-    delay(500);
+    voltage = ads.computeVolts(adc_0); // 计算电压值(根据默认增益计算，每位3mV)
+    OLED_Show();
     // 补光控制逻辑
-    int16_t dutyCycle = 0;
-    if (voltage < 1.0)
-    {
-        // 1V关闭 0.2V全亮
-        dutyCycle = map(voltage * 100, 20, 100, 1023, 0);
-        dutyCycle = constrain(dutyCycle, 0, 1023); // 限幅
-    }
-    else
-    {
-        dutyCycle = 0;
-    }
+    // int16_t dutyCycle = 0;
+    // if (voltage < 1.0)
+    // {
+    //     // 1V关闭 0.2V全亮
+    //     dutyCycle = map(voltage * 100, 20, 100, 1023, 0);
+    //     dutyCycle = constrain(dutyCycle, 0, 1023); // 限幅
+    // }
+    // else
+    // {
+    //     dutyCycle = 0;
+    // }
     // ledcWrite(0, dutyCycle);
-
-    // OLED屏幕更新显示
-    // display.clearDisplay();
-    // display.setCursor(0, 0);
-    // display.setTextSize(1);
-    // // WiFi连接状态
-    // display.print("WiFi:");
-    // display.println(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
-    // // RCWL雷达状态
-    // display.print("Motion:");
-    // display.println(digitalRead(RCWL_PIN) == HIGH ? "Detected!" : "Searching");
-    // // 光敏电阻电压值
-    // display.print("voltage:");
-    // display.print(voltage);
-    // display.display();
 
     // 连接MQTT服务器
     // mqtt_client.loop();
     // if (!mqtt_client.connect("esp32-cam")) reconnect();
-    unsigned long now = millis();
-    now = millis();
+
     if (now - lastMsgTime >= mqttInterval)
     {
         lastMsgTime = now;
         // 发布MQTT消息
-        pubSensors();
+        // pubSensors();
         // mqtt_client.publish("attributes", ("{\"temperature\": " + String(temperature) + ", \"humidity\": " + String(humidity) + "}").c_str());
         // mqtt_client.publish("attributes", ("{\"brightness\"}" ":" + String(brightness)).c_str());
     }
