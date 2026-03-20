@@ -10,7 +10,7 @@
 #include <ThingsCloudWiFiManager.h>
 #include <WiFi.h>
 #include <Wire.h>
-
+#include <WiFiUdp.h>
 // 引脚定义必须在前 否则会初始化失败
 #define CAMERA_MODEL_AI_THINKER
 #include "camera_pins.h"
@@ -43,6 +43,12 @@ int lightPercent = 0;
 // WiFi信号强度 dBm
 long rssi = 0;
 int16_t personCount = 0;
+// 是否佩戴头盔
+uint8_t isProtection = 0;
+// UDP配置
+WiFiUDP udp;
+#define localUdpPort 8266
+char udpPacket[255];
 
 // MQTT连接
 ThingsCloudMQTT mqtt_client(THINGSCLOUD_MQTT_HOST,
@@ -52,13 +58,29 @@ ThingsCloudMQTT mqtt_client(THINGSCLOUD_MQTT_HOST,
 WiFiClient esp32Client;
 // 必须实现这个回调函数，当 MQTT 连接成功后执行该函数。
 void onMQTTConnect() { Serial.println("MQTT 连接成功"); }
+void checkUdpUpdate() {
+    // 持续监听UDP包
+    int packetSize = udp.parsePacket();
+    if (packetSize) {
+        char packetBuffer[10];
+        int len = udp.read(packetBuffer, 9);
+        if (len > 0) {
+            packetBuffer[len] = '\0';
+            // 将接收到的 "1" 或 "0" 转为整数更新全局变量
+            isProtection = atoi(packetBuffer); 
+            Serial.printf("收到 PC 指令，检测状态更新为: %d\n", isProtection);
+        }
+    }
+}
 void pubSensors() {
+    checkUdpUpdate();
+    
     DynamicJsonDocument obj(512);
     obj["RCWL"] = RCWLState;
     obj["WiFiState"] = rssi;
     obj["lightPercent"] = lightPercent;
     obj["personCount"] = personCount;
-    obj["isProtection"] = 1;
+    obj["isProtection"] = isProtection;
     char attributes[512];
     serializeJson(obj, attributes);
     // 调用属性上报方法
@@ -91,7 +113,7 @@ void camera_init() {
     config.pixel_format = PIXFORMAT_JPEG;
 
     if (psramFound()) {
-        config.frame_size = FRAMESIZE_XGA; // 1600x1200
+        config.frame_size = FRAMESIZE_CIF; // 400x296
         config.jpeg_quality = 10;          // 数值越小画质越好
         config.fb_count = 1;               // 降低内存压力
     } else {
@@ -115,12 +137,15 @@ void camera_init() {
     sensor_t *s = esp_camera_sensor_get();
     // initial sensors are flipped vertically and colors are a bit saturated
     if (s->id.PID == OV2640_PID) {
-        s->set_vflip(s, 1);       // flip it back
-        s->set_brightness(s, 1);  // up the brightness just a bit
-        s->set_saturation(s, -2); // lower the saturation
+        s->set_vflip(s, 1);       // 垂直翻转
+        s->set_brightness(s, 1);  // 微调亮度(-2~1) 光线充足则为0
+        s->set_saturation(s, -2); // 饱和度
+        s->set_whitebal(s, 1);       // 开启白平衡
+        s->set_gain_ctrl(s, 1);      // 开启自动增益
+        // s->set_agc_gain(s, 2);       // 手动调大增益（如果环境暗）
     }
     // drop down frame size for higher initial frame rate
-    s->set_framesize(s, FRAMESIZE_XGA);
+    s->set_framesize(s, FRAMESIZE_CIF);
 
 #if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
     s->set_vflip(s, 1);
@@ -221,11 +246,15 @@ void setup() {
     Serial.println("WiFi connected");
 
     // 开启摄像头
-    startCameraServer();
+    // startCameraServer();
 
     Serial.print("Camera Ready! Use 'http://");
     Serial.print(WiFi.localIP());
     Serial.println("' to connect");
+
+    // 开启UDP监听
+    udp.begin(localUdpPort);
+    Serial.printf("正在监听UDP端口:%d\n", localUdpPort);
 }
 // 控制OLED频率 500ms
 unsigned long lastDisplayTime = 0;
@@ -267,7 +296,6 @@ void loop() {
         OLED_Show();
         lastDisplayTime = millis();
     }
-
     // 读取ADS1015原始值和电压值
     ads.setGain(GAIN_TWOTHIRDS);
     int16_t adc_0 = ads.readADC_SingleEnded(0);
