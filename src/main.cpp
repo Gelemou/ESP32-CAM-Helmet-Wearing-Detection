@@ -1,15 +1,15 @@
-#include <Arduino.h>
 #include "esp_camera.h"
+#include <Arduino.h>
 
 #include "config.h"
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <ThingsCloudWiFiManager.h>
-#include <ThingsCloudMQTT.h>
-#include <Wire.h>
 #include <Adafruit_ADS1X15.h> // ADC采集
-#include <Adafruit_GFX.h>     
+#include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h> // 显示屏
+#include <HTTPClient.h>
+#include <ThingsCloudMQTT.h>
+#include <ThingsCloudWiFiManager.h>
+#include <WiFi.h>
+#include <Wire.h>
 
 // 引脚定义必须在前 否则会初始化失败
 #define CAMERA_MODEL_AI_THINKER
@@ -26,11 +26,9 @@
 
 // RCWL雷达代码
 #define RCWL_PIN 13
-bool RCWLState = false;
-void RCWLChangeState()
-{
-    RCWLState = true;
-}
+bool RCWLState = LOW;
+bool lastRCWLState = LOW;
+void RCWLChangeState() { RCWLState = HIGH; }
 
 // 板载LED引脚配置
 #define LED_PIN 4
@@ -47,24 +45,20 @@ long rssi = 0;
 int16_t personCount = 0;
 
 // MQTT连接
-ThingsCloudMQTT mqtt_client(
-    THINGSCLOUD_MQTT_HOST,
-    THINGSCLOUD_DEVICE_ACCESS_TOKEN,
-    THINGSCLOUD_PROJECT_KEY);
+ThingsCloudMQTT mqtt_client(THINGSCLOUD_MQTT_HOST,
+                            THINGSCLOUD_DEVICE_ACCESS_TOKEN,
+                            THINGSCLOUD_PROJECT_KEY);
 
 WiFiClient esp32Client;
 // 必须实现这个回调函数，当 MQTT 连接成功后执行该函数。
-void onMQTTConnect()
-{
-    Serial.println("MQTT 连接成功");
-}
-void pubSensors()
-{
+void onMQTTConnect() { Serial.println("MQTT 连接成功"); }
+void pubSensors() {
     DynamicJsonDocument obj(512);
     obj["RCWL"] = RCWLState;
     obj["WiFiState"] = rssi;
     obj["lightPercent"] = lightPercent;
     obj["personCount"] = personCount;
+    obj["isProtection"] = 1;
     char attributes[512];
     serializeJson(obj, attributes);
     // 调用属性上报方法
@@ -72,8 +66,7 @@ void pubSensors()
 }
 void startCameraServer();
 camera_config_t config;
-void camera_init()
-{
+void camera_init() {
     Serial.setDebugOutput(true);
 
     config.ledc_channel = LEDC_CHANNEL_0;
@@ -97,14 +90,11 @@ void camera_init()
     config.xclk_freq_hz = 20000000;
     config.pixel_format = PIXFORMAT_JPEG;
 
-    if (psramFound())
-    {
+    if (psramFound()) {
         config.frame_size = FRAMESIZE_XGA; // 1600x1200
         config.jpeg_quality = 10;          // 数值越小画质越好
         config.fb_count = 1;               // 降低内存压力
-    }
-    else
-    {
+    } else {
         Serial.println("PSRAM not found");
     }
     // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
@@ -117,16 +107,14 @@ void camera_init()
 
     // camera init
     esp_err_t err = esp_camera_init(&config);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
         Serial.printf("Camera init failed with error 0x%x", err);
         return;
     }
 
     sensor_t *s = esp_camera_sensor_get();
     // initial sensors are flipped vertically and colors are a bit saturated
-    if (s->id.PID == OV2640_PID)
-    {
+    if (s->id.PID == OV2640_PID) {
         s->set_vflip(s, 1);       // flip it back
         s->set_brightness(s, 1);  // up the brightness just a bit
         s->set_saturation(s, -2); // lower the saturation
@@ -139,8 +127,7 @@ void camera_init()
     s->set_hmirror(s, 1);
 #endif
 }
-void sensorInit()
-{
+void sensorInit() {
     // 初始化RCWL引脚
     pinMode(RCWL_PIN, INPUT);
     Serial.println("RCWL-0515已启动");
@@ -148,47 +135,39 @@ void sensorInit()
     Wire.begin(I2C_SDA, I2C_SCL);
     // Wire.setClock(100000);
     // 初始化ADS1015，显式传入地址0x48
-    if (!ads.begin(0x48, &Wire))
-    {
+    if (!ads.begin(0x48, &Wire)) {
         Serial.println("ADS1015初始化失败");
         delay(100);
         ads.begin(0x48);
-    }
-    else
-    {
+    } else {
         Serial.println("ADS1015初始化成功");
     }
     // 初始化OLED屏幕
-    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRES))
-    {
+    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRES)) {
         Serial.println("SSD1306分配失败");
-    }
-    else
-    {
+    } else {
         Serial.println("OLED初始化成功");
         display.clearDisplay();
     }
     // I2C自检
     Serial.println("Scanning I2C...");
-    for (byte address = 1; address < 127; address++)
-    {
+    for (byte address = 1; address < 127; address++) {
         Wire.beginTransmission(address);
-        if (Wire.endTransmission() == 0)
-        {
+        if (Wire.endTransmission() == 0) {
             Serial.print("Found device at 0x");
             Serial.println(address, HEX);
         }
     }
 }
-void OLED_Show()
-{
+void OLED_Show() {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
     // WiFi连接状态
     display.print("WiFi:");
-    display.println(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
+    display.println(WiFi.status() == WL_CONNECTED ? "Connected"
+                                                  : "Disconnected");
     // RCWL雷达状态
     display.print("Motion:");
     display.println(RCWLState ? "Detected!" : "Searching");
@@ -196,56 +175,45 @@ void OLED_Show()
     display.print("voltage:");
     display.println(voltage);
     display.display();
-    delay(500);
 }
 void capture() {
-    // 拍照
-    if (millis() - lastTime > interval)
-    {
-        lastTime = millis();
-
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (!fb)
-        {
-            Serial.println("Camera capture failed");
-            return;
-        }
-        // 上传图片到Flask服务器
-        HTTPClient http;
-        http.begin(esp32Client, "http://192.168.1.3:8080/upload"); // Flask服务器地址
-        http.addHeader("Content-Type", "image/jpeg");
-        int httpResponseCode = http.POST(fb->buf, fb->len);
-        if (httpResponseCode > 0)
-        {
-            Serial.printf("Image sent, response: %d\n", httpResponseCode);
-        }
-        else
-        {
-            Serial.printf("Failed, error: %s\n", http.errorToString(httpResponseCode).c_str());
-        }
-
-        http.end();
-        esp_camera_fb_return(fb);
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("Camera capture failed");
+        return;
     }
+    // 上传图片到Flask服务器
+    HTTPClient http;
+    http.begin(esp32Client,
+               "http://192.168.1.5:8080/upload"); // Flask服务器地址
+    http.addHeader("Content-Type", "image/jpeg");
+    int httpResponseCode = http.POST(fb->buf, fb->len);
+    if (httpResponseCode > 0) {
+        Serial.printf("Image sent, response: %d\n", httpResponseCode);
+    } else {
+        Serial.printf("Failed, error: %s\n",
+                      http.errorToString(httpResponseCode).c_str());
+    }
+
+    http.end();
+    esp_camera_fb_return(fb);
 }
-void setup()
-{
+void setup() {
     Serial.begin(115200);
     // 板载LED关闭
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     sensorInit();
     // 初始化LED PWM 5kHz 10Bit(0~1023)
-    ledcSetup(0, 5000, 10);
-    ledcAttachPin(LED_PIN, 0);
+    // ledcSetup(0, 100, 10);
+    // ledcAttachPin(LED_PIN, 0);
 
     //  允许 SDK 的日志输出
     mqtt_client.enableDebuggingMessages();
     camera_init();
     WiFi.begin(ssid, password);
 
-    while (WiFi.status() != WL_CONNECTED)
-    {
+    while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
     }
@@ -268,36 +236,44 @@ const int interval = 500;
 // 控制mqtt发送频率 10s
 unsigned long lastMsgTime = 0;
 const int mqttInterval = 10000;
-// 控制RCWL检测频率 100ms
+// 控制检测频率 20ms
 unsigned long lastCheck = 0;
-const int checkInterval = 100;
-void loop()
-{
+const int checkInterval = 20;
+unsigned long RCWLKeepTime = 0; // 记录RCWL状态保持时间
+const int keepDuration = 3000;  // 检测到人后状态位保持3秒
+void loop() {
     // 获取WiFi强度
     rssi = WiFi.RSSI();
     unsigned long now = millis();
     // RCWL检测代码
-    if (now - lastCheck >= checkInterval)
-    {
-        RCWLState = digitalRead(RCWL_PIN);
-        if (RCWLState)
-        {
+    if (now - lastCheck >= checkInterval) {
+        bool currentRCWLState = digitalRead(RCWL_PIN);
+        RCWLState = false;
+        if (currentRCWLState == HIGH && lastRCWLState == LOW) {
             Serial.println("--检测到人员移动--");
             personCount++;
-            RCWLState = false;
+            RCWLKeepTime = millis();
         }
+        lastRCWLState = currentRCWLState;
         lastCheck = millis();
     }
+    if (millis() - RCWLKeepTime < keepDuration) {
+        RCWLState = true;
+    } else {
+        RCWLState = false;
+    }
     // OLED显示代码
-    if (now - lastDisplayTime >= displayInterval)
-    {
+    if (now - lastDisplayTime >= displayInterval) {
         OLED_Show();
         lastDisplayTime = millis();
     }
 
     // 读取ADS1015原始值和电压值
+    ads.setGain(GAIN_TWOTHIRDS);
     int16_t adc_0 = ads.readADC_SingleEnded(0);
-    voltage = ads.computeVolts(adc_0); // 计算电压值(根据默认增益计算，每位3mV)
+    voltage = ads.computeVolts(adc_0); // 计算电压值
+    // Serial.print("voltage:");
+    // Serial.println(voltage);
     // 环境百分比
     lightPercent = (voltage / 3.3) * 100;
     if (lightPercent > 100) {
@@ -307,27 +283,26 @@ void loop()
     }
     // 补光控制逻辑
     int16_t dutyCycle = 0;
-    if (voltage < 1.0)
-    {
-        // 1V关闭 0.2V全亮
-        dutyCycle = map(voltage * 100, 20, 100, 1023, 0);
-        dutyCycle = constrain(dutyCycle, 0, 1023); // 限幅
-    }
-    else
-    {
+    if (voltage < 2.0) {
+        // dutyCycle = map(voltage * 100, 20, 200, 150, 0);
+        // dutyCycle = constrain(dutyCycle, 0, 150); // 限幅
+        dutyCycle = 10;
+    } else {
         dutyCycle = 0;
     }
-    ledcWrite(0, dutyCycle);
+    // ledcWrite(0, dutyCycle);
 
     // 连接MQTT服务器
     mqtt_client.loop();
-    if (now - lastMsgTime >= mqttInterval)
-    {
+    if (now - lastMsgTime >= mqttInterval) {
         // 发布MQTT消息
         pubSensors();
-        // mqtt_client.publish("attributes", ("{\"temperature\": " + String(temperature) + ", \"humidity\": " + String(humidity) + "}").c_str());
-        // mqtt_client.publish("attributes", ("{\"brightness\"}" ":" + String(brightness)).c_str());
         lastMsgTime = millis();
     }
-    
+    // 拍照
+    if (millis() - lastTime > interval) {
+        // capture();
+        RCWLState = true;
+        lastTime = millis();
+    }
 }
