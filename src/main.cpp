@@ -9,8 +9,8 @@
 #include <ThingsCloudMQTT.h>
 #include <ThingsCloudWiFiManager.h>
 #include <WiFi.h>
-#include <Wire.h>
 #include <WiFiUdp.h>
+#include <Wire.h>
 // 引脚定义必须在前 否则会初始化失败
 #define CAMERA_MODEL_AI_THINKER
 #include "camera_pins.h"
@@ -32,6 +32,9 @@ void RCWLChangeState() { RCWLState = HIGH; }
 
 // 板载LED引脚配置
 #define LED_PIN 4
+// LED滞回控制阈值 (单位: V)
+#define LED_ON_THRESHOLD 1.8f  // 电压低于此值则点亮LED
+#define LED_OFF_THRESHOLD 2.2f // 电压高于此值则关闭LED
 // 创建实例连接
 Adafruit_ADS1015 ads; // ADS1015
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -45,6 +48,8 @@ long rssi = 0;
 int16_t personCount = 0;
 // 是否佩戴头盔
 uint8_t isProtection = 0;
+// LED状态跟踪 (滞回控制)
+bool ledState = false; // false = 关闭, true = 点亮
 // UDP配置
 WiFiUDP udp;
 #define localUdpPort 8266
@@ -56,6 +61,7 @@ ThingsCloudMQTT mqtt_client(THINGSCLOUD_MQTT_HOST,
                             THINGSCLOUD_PROJECT_KEY);
 
 WiFiClient esp32Client;
+HTTPClient http;
 // 必须实现这个回调函数，当 MQTT 连接成功后执行该函数。
 void onMQTTConnect() { Serial.println("MQTT 连接成功"); }
 void checkUdpUpdate() {
@@ -67,20 +73,19 @@ void checkUdpUpdate() {
         if (len > 0) {
             packetBuffer[len] = '\0';
             // 将接收到的 "1" 或 "0" 转为整数更新全局变量
-            isProtection = atoi(packetBuffer); 
+            isProtection = atoi(packetBuffer);
             Serial.printf("收到 PC 指令，检测状态更新为: %d\n", isProtection);
         }
     }
 }
 void pubSensors() {
-    checkUdpUpdate();
-    
+
     DynamicJsonDocument obj(512);
     obj["RCWL"] = RCWLState;
     obj["WiFiState"] = rssi;
     obj["lightPercent"] = lightPercent;
     obj["personCount"] = personCount;
-    obj["isProtection"] = isProtection;
+    obj["isProtection"] = isProtection == 1;
     char attributes[512];
     serializeJson(obj, attributes);
     // 调用属性上报方法
@@ -113,9 +118,9 @@ void camera_init() {
     config.pixel_format = PIXFORMAT_JPEG;
 
     if (psramFound()) {
-        config.frame_size = FRAMESIZE_CIF; // 400x296
-        config.jpeg_quality = 10;          // 数值越小画质越好
-        config.fb_count = 1;               // 降低内存压力
+        config.frame_size = FRAMESIZE_SVGA; // 640x480
+        config.jpeg_quality = 6;            // 数值越小画质越好
+        config.fb_count = 1;                // 降低内存压力
     } else {
         Serial.println("PSRAM not found");
     }
@@ -140,12 +145,12 @@ void camera_init() {
         s->set_vflip(s, 1);       // 垂直翻转
         s->set_brightness(s, 1);  // 微调亮度(-2~1) 光线充足则为0
         s->set_saturation(s, -2); // 饱和度
-        s->set_whitebal(s, 1);       // 开启白平衡
-        s->set_gain_ctrl(s, 1);      // 开启自动增益
+        s->set_whitebal(s, 1);    // 开启白平衡
+        s->set_gain_ctrl(s, 1);   // 开启自动增益
         // s->set_agc_gain(s, 2);       // 手动调大增益（如果环境暗）
     }
     // drop down frame size for higher initial frame rate
-    s->set_framesize(s, FRAMESIZE_CIF);
+    s->set_framesize(s, FRAMESIZE_SVGA);
 
 #if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
     s->set_vflip(s, 1);
@@ -208,9 +213,9 @@ void capture() {
         return;
     }
     // 上传图片到Flask服务器
-    HTTPClient http;
     http.begin(esp32Client,
-               "http://192.168.1.5:8080/upload"); // Flask服务器地址
+               "http://192.168.1.6:8080/upload"); // Flask服务器地址
+
     http.addHeader("Content-Type", "image/jpeg");
     int httpResponseCode = http.POST(fb->buf, fb->len);
     if (httpResponseCode > 0) {
@@ -229,9 +234,6 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     sensorInit();
-    // 初始化LED PWM 5kHz 10Bit(0~1023)
-    // ledcSetup(0, 100, 10);
-    // ledcAttachPin(LED_PIN, 0);
 
     //  允许 SDK 的日志输出
     mqtt_client.enableDebuggingMessages();
@@ -244,9 +246,8 @@ void setup() {
     }
     Serial.println("");
     Serial.println("WiFi connected");
-
     // 开启摄像头
-    // startCameraServer();
+    startCameraServer();
 
     Serial.print("Camera Ready! Use 'http://");
     Serial.print(WiFi.localIP());
@@ -259,9 +260,9 @@ void setup() {
 // 控制OLED频率 500ms
 unsigned long lastDisplayTime = 0;
 const int displayInterval = 500;
-// 控制拍照频率 500ms
+// 控制拍照频率 100ms
 unsigned long lastTime = 0;
-const int interval = 500;
+const int interval = 100;
 // 控制mqtt发送频率 10s
 unsigned long lastMsgTime = 0;
 const int mqttInterval = 10000;
@@ -269,11 +270,19 @@ const int mqttInterval = 10000;
 unsigned long lastCheck = 0;
 const int checkInterval = 20;
 unsigned long RCWLKeepTime = 0; // 记录RCWL状态保持时间
-const int keepDuration = 3000;  // 检测到人后状态位保持3秒
+const int keepDuration = 5000;  // 检测到人后状态位保持5秒
 void loop() {
     // 获取WiFi强度
     rssi = WiFi.RSSI();
     unsigned long now = millis();
+
+    // 连接MQTT服务器
+    mqtt_client.loop();
+    if (now - lastMsgTime >= mqttInterval) {
+        // 发布MQTT消息
+        pubSensors();
+        lastMsgTime = now;
+    }
     // RCWL检测代码
     if (now - lastCheck >= checkInterval) {
         bool currentRCWLState = digitalRead(RCWL_PIN);
@@ -281,56 +290,60 @@ void loop() {
         if (currentRCWLState == HIGH && lastRCWLState == LOW) {
             Serial.println("--检测到人员移动--");
             personCount++;
-            RCWLKeepTime = millis();
+            RCWLKeepTime = now;
         }
         lastRCWLState = currentRCWLState;
         lastCheck = millis();
     }
-    if (millis() - RCWLKeepTime < keepDuration) {
-        RCWLState = true;
-    } else {
-        RCWLState = false;
+    RCWLState = (now - RCWLKeepTime < keepDuration);
+
+    // 有人状态
+    if (RCWLState) {
+        // 监听PC端发来的头盔识别结果
+        checkUdpUpdate();
+        // 读取ADS1015原始值和电压值
+        ads.setGain(GAIN_TWOTHIRDS);
+        int16_t adc_0 = ads.readADC_SingleEnded(0);
+        voltage = ads.computeVolts(adc_0); // 计算电压值
+        // 环境百分比
+        lightPercent = (voltage / 3.3) * 100;
+        if (lightPercent > 100) {
+            lightPercent = 100;
+        } else if (lightPercent < 0) {
+            lightPercent = 0;
+        }
+
+        // 补光控制逻辑 (滞回控制)
+        if (!ledState && voltage < LED_ON_THRESHOLD) {
+            // LED当前关闭且电压低于开启阈值 -> 点亮LED
+            digitalWrite(LED_PIN, HIGH);
+            ledState = true;
+        } else if (ledState && voltage > LED_OFF_THRESHOLD) {
+            // LED当前点亮且电压高于关闭阈值 -> 关闭LED
+            digitalWrite(LED_PIN, LOW);
+            ledState = false;
+        }
+        // 若电压处于两个阈值之间，LED保持当前状态不变
+    } else { // 无人模式
+        if (ledState) {
+            digitalWrite(LED_PIN, LOW);
+            ledState = false;
+        }
+        ads.setGain(GAIN_TWOTHIRDS);
+        int16_t adc_0 = ads.readADC_SingleEnded(0);
+        voltage = ads.computeVolts(adc_0);
+        lightPercent = constrain((voltage / 3.3) * 100, 0, 100);
     }
     // OLED显示代码
     if (now - lastDisplayTime >= displayInterval) {
         OLED_Show();
         lastDisplayTime = millis();
     }
-    // 读取ADS1015原始值和电压值
-    ads.setGain(GAIN_TWOTHIRDS);
-    int16_t adc_0 = ads.readADC_SingleEnded(0);
-    voltage = ads.computeVolts(adc_0); // 计算电压值
-    // Serial.print("voltage:");
-    // Serial.println(voltage);
-    // 环境百分比
-    lightPercent = (voltage / 3.3) * 100;
-    if (lightPercent > 100) {
-        lightPercent = 100;
-    } else if (lightPercent < 0) {
-        lightPercent = 0;
-    }
-    // 补光控制逻辑
-    int16_t dutyCycle = 0;
-    if (voltage < 2.0) {
-        // dutyCycle = map(voltage * 100, 20, 200, 150, 0);
-        // dutyCycle = constrain(dutyCycle, 0, 150); // 限幅
-        dutyCycle = 10;
-    } else {
-        dutyCycle = 0;
-    }
-    // ledcWrite(0, dutyCycle);
 
-    // 连接MQTT服务器
-    mqtt_client.loop();
-    if (now - lastMsgTime >= mqttInterval) {
-        // 发布MQTT消息
-        pubSensors();
-        lastMsgTime = millis();
-    }
-    // 拍照
-    if (millis() - lastTime > interval) {
-        // capture();
-        RCWLState = true;
-        lastTime = millis();
-    }
+    // // 拍照
+    // if (millis() - lastTime > interval) {
+    //     // capture();
+    //     RCWLState = true;
+    //     lastTime = millis();
+    // }
 }
