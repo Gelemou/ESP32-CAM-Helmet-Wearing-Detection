@@ -48,6 +48,8 @@ long rssi = 0;
 int16_t personCount = 0;
 // 是否佩戴头盔
 uint8_t isProtection = 0;
+bool isProtectionChanged = false; // 标记isProtection是否变化
+unsigned long lastFullUploadTime = 0; // 上次完整上传时间
 // LED状态跟踪 (滞回控制)
 bool ledState = false; // false = 关闭, true = 点亮
 // UDP配置
@@ -73,7 +75,11 @@ void checkUdpUpdate() {
         if (len > 0) {
             packetBuffer[len] = '\0';
             // 将接收到的 "1" 或 "0" 转为整数更新全局变量
+            uint8_t oldIsProtection = isProtection; // 保存旧值
             isProtection = atoi(packetBuffer);
+            if (oldIsProtection != isProtection) { // 如果isProtection发生变化
+                isProtectionChanged = true;        // 标记为已变化
+            }
             Serial.printf("收到 PC 指令，检测状态更新为: %d\n", isProtection);
         }
     }
@@ -264,8 +270,8 @@ const int displayInterval = 500;
 unsigned long lastTime = 0;
 const int interval = 100;
 // 控制mqtt发送频率 10s
-unsigned long lastMsgTime = 0;
-const int mqttInterval = 10000;
+// unsigned long lastMsgTime = 0; // 移除
+const int mqttInterval = 10000; // 保持定义，用于时间间隔判断
 // 控制检测频率 20ms
 unsigned long lastCheck = 0;
 const int checkInterval = 20;
@@ -278,10 +284,16 @@ void loop() {
 
     // 连接MQTT服务器
     mqtt_client.loop();
-    if (now - lastMsgTime >= mqttInterval) {
-        // 发布MQTT消息
+    // 定时上报所有传感器数据
+    if (now - lastFullUploadTime >= mqttInterval) {
         pubSensors();
-        lastMsgTime = now;
+        lastFullUploadTime = now; // 更新上次完整上传时间
+        isProtectionChanged = false; // 常规上传后，清除变化标记
+    }
+    // 如果isProtection有变化，且不是刚刚通过常规上传上报的，则立即上报
+    else if (isProtectionChanged) {
+        pubSensors();
+        isProtectionChanged = false; // 清除变化标记
     }
     // RCWL检测代码
     if (now - lastCheck >= checkInterval) {
