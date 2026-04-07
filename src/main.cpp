@@ -104,23 +104,24 @@ void pubSensors() {
 }
 void startCameraServer();
 void stopCameraServer() {
-    if (cameraIsRunning) {
-        // 先停止HTTP服务器
-        if (stream_httpd) {
-            httpd_stop(stream_httpd);
-            stream_httpd = NULL;
-        }
-        if (camera_httpd) {
-            httpd_stop(camera_httpd);
-            camera_httpd = NULL;
-        }
-
-        // 释放摄像头资源
-        esp_camera_deinit();
-
-        cameraIsRunning = false;
-        Serial.println("Camera Server Stopped and resources released.");
+    // 仅停止HTTP服务器
+    if (stream_httpd) {
+        httpd_stop(stream_httpd);
+        stream_httpd = NULL;
     }
+    if (camera_httpd) {
+        httpd_stop(camera_httpd);
+        camera_httpd = NULL;
+    }
+    
+    // 设置传感器进入低功耗模式
+    sensor_t *s = esp_camera_sensor_get();
+    if(s) {
+        s->set_powerdown(s, 1); // 1=进入休眠模式
+    }
+    
+    cameraIsRunning = false;
+    Serial.println("HTTP Server Stopped, Camera in standby");
 }
 camera_config_t config;
 void camera_init() {
@@ -265,9 +266,16 @@ void setup() {
     digitalWrite(LED_PIN, LOW);
     sensorInit();
 
-    //  允许 SDK 的日志输出
+    // 允许 SDK 的日志输出
     mqtt_client.enableDebuggingMessages();
+    
+    // 初始化摄像头(仅一次)
     camera_init();
+    // 初始状态设为休眠
+    sensor_t *s = esp_camera_sensor_get();
+    if(s) {
+        s->set_powerdown(s, 1);
+    }
     WiFi.begin(ssid, password);
 
     while (WiFi.status() != WL_CONNECTED) {
@@ -338,7 +346,12 @@ void loop() {
         // 有人且关摄像头时开启
         if (!cameraIsRunning) {
             Serial.println("Action: Starting Camera Server...");
-            camera_init(); // 重新初始化摄像头
+            // 唤醒传感器
+            sensor_t *s = esp_camera_sensor_get();
+            if(s) {
+                s->set_powerdown(s, 0); // 0=退出休眠模式
+                delay(100); // 等待传感器稳定
+            }
             startCameraServer();
             cameraIsRunning = true;
         }
@@ -371,7 +384,7 @@ void loop() {
         // 无人且开摄像头时关闭
         if (cameraIsRunning) {
             Serial.println("Action: Stopping Camera Server...");
-            stopCameraServer(); // 使用优化后的停止函数
+            stopCameraServer();
         }
         if (ledState) {
             digitalWrite(LED_PIN, LOW);
