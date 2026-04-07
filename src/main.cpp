@@ -2,6 +2,7 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "esp_http_server.h"
 #include <Adafruit_ADS1X15.h> // ADC采集
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h> // 显示屏
@@ -39,6 +40,10 @@ void RCWLChangeState() { RCWLState = HIGH; }
 Adafruit_ADS1015 ads; // ADS1015
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+extern httpd_handle_t stream_httpd;
+extern httpd_handle_t camera_httpd;
+// 记录摄像头服务器当前运行状态
+bool cameraIsRunning = false;
 // 光敏电压
 float voltage = 0;
 // 光敏百分比
@@ -48,7 +53,7 @@ long rssi = 0;
 int16_t personCount = 0;
 // 是否佩戴头盔
 uint8_t isProtection = 0;
-bool isProtectionChanged = false; // 标记isProtection是否变化
+bool isProtectionChanged = false;     // 标记isProtection是否变化
 unsigned long lastFullUploadTime = 0; // 上次完整上传时间
 // LED状态跟踪 (滞回控制)
 bool ledState = false; // false = 关闭, true = 点亮
@@ -98,6 +103,17 @@ void pubSensors() {
     mqtt_client.reportAttributes(attributes);
 }
 void startCameraServer();
+void stopCameraServer() {
+    if (stream_httpd) {
+        httpd_stop(stream_httpd);
+        stream_httpd = NULL;
+    }
+    if (camera_httpd) {
+        httpd_stop(camera_httpd);
+        camera_httpd = NULL;
+    }
+    Serial.println("Camera Server Stopped.");
+}
 camera_config_t config;
 void camera_init() {
     Serial.setDebugOutput(true);
@@ -253,7 +269,7 @@ void setup() {
     Serial.println("");
     Serial.println("WiFi connected");
     // 开启摄像头
-    startCameraServer();
+    // startCameraServer();
 
     Serial.print("Camera Ready! Use 'http://");
     Serial.print(WiFi.localIP());
@@ -276,7 +292,7 @@ const int mqttInterval = 10000; // 保持定义，用于时间间隔判断
 unsigned long lastCheck = 0;
 const int checkInterval = 20;
 unsigned long RCWLKeepTime = 0; // 记录RCWL状态保持时间
-const int keepDuration = 5000;  // 检测到人后状态位保持5秒
+const int keepDuration = 10000; // 检测到人后状态位保持10秒
 void loop() {
     // 获取WiFi强度
     rssi = WiFi.RSSI();
@@ -287,7 +303,7 @@ void loop() {
     // 定时上报所有传感器数据
     if (now - lastFullUploadTime >= mqttInterval) {
         pubSensors();
-        lastFullUploadTime = now; // 更新上次完整上传时间
+        lastFullUploadTime = now;    // 更新上次完整上传时间
         isProtectionChanged = false; // 常规上传后，清除变化标记
     }
     // 如果isProtection有变化，且不是刚刚通过常规上传上报的，则立即上报
@@ -311,6 +327,12 @@ void loop() {
 
     // 有人状态
     if (RCWLState) {
+        // 有人且关摄像头时开启
+        if (!cameraIsRunning) {
+            Serial.println("Action: Starting Camera Server...");
+            startCameraServer();
+            cameraIsRunning = true;
+        }
         // 监听PC端发来的头盔识别结果
         checkUdpUpdate();
         // 读取ADS1015原始值和电压值
@@ -337,6 +359,12 @@ void loop() {
         }
         // 若电压处于两个阈值之间，LED保持当前状态不变
     } else { // 无人模式
+        // 无人且开摄像头时关闭
+        if (cameraIsRunning) {
+            Serial.println("Action: Stopping Camera Server...");
+            stopCameraServer();
+            cameraIsRunning = false;
+        }
         if (ledState) {
             digitalWrite(LED_PIN, LOW);
             ledState = false;
