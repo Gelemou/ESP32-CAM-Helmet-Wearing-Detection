@@ -113,13 +113,13 @@ void stopCameraServer() {
         httpd_stop(camera_httpd);
         camera_httpd = NULL;
     }
-    
+
     // 设置传感器进入低功耗模式
     sensor_t *s = esp_camera_sensor_get();
-    if(s) {
+    if (s) {
         s->set_powerdown(s, 1); // 1=进入休眠模式
     }
-    
+
     cameraIsRunning = false;
     Serial.println("HTTP Server Stopped, Camera in standby");
 }
@@ -268,12 +268,12 @@ void setup() {
 
     // 允许 SDK 的日志输出
     mqtt_client.enableDebuggingMessages();
-    
+
     // 初始化摄像头(仅一次)
     camera_init();
     // 初始状态设为休眠
     sensor_t *s = esp_camera_sensor_get();
-    if(s) {
+    if (s) {
         s->set_powerdown(s, 1);
     }
     WiFi.begin(ssid, password);
@@ -348,9 +348,9 @@ void loop() {
             Serial.println("Action: Starting Camera Server...");
             // 唤醒传感器
             sensor_t *s = esp_camera_sensor_get();
-            if(s) {
+            if (s) {
                 s->set_powerdown(s, 0); // 0=退出休眠模式
-                delay(100); // 等待传感器稳定
+                delay(100);             // 等待传感器稳定
             }
             startCameraServer();
             cameraIsRunning = true;
