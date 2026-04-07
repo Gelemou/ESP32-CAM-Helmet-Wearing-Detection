@@ -114,14 +114,15 @@ void stopCameraServer() {
         camera_httpd = NULL;
     }
 
-    // 设置传感器进入低功耗模式
+    // 降低摄像头帧率到最低(1fps)来节省功耗
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
-        s->set_powerdown(s, 1); // 1=进入休眠模式
+        s->set_framesize(s, FRAMESIZE_QVGA); // 降低分辨率
+        s->set_quality(s, 12); // 最低画质
     }
 
     cameraIsRunning = false;
-    Serial.println("HTTP Server Stopped, Camera in standby");
+    Serial.println("HTTP Server Stopped, Camera in low-power mode");
 }
 camera_config_t config;
 void camera_init() {
@@ -271,10 +272,11 @@ void setup() {
 
     // 初始化摄像头(仅一次)
     camera_init();
-    // 初始状态设为休眠
+    // 初始状态设为低帧率模式
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
-        s->set_powerdown(s, 1);
+        s->set_framesize(s, FRAMESIZE_QVGA);
+        s->set_quality(s, 12);
     }
     WiFi.begin(ssid, password);
 
@@ -346,11 +348,12 @@ void loop() {
         // 有人且关摄像头时开启
         if (!cameraIsRunning) {
             Serial.println("Action: Starting Camera Server...");
-            // 唤醒传感器
+            // 恢复摄像头正常设置
             sensor_t *s = esp_camera_sensor_get();
             if (s) {
-                s->set_powerdown(s, 0); // 0=退出休眠模式
-                delay(100);             // 等待传感器稳定
+                s->set_framesize(s, FRAMESIZE_SVGA); // 恢复分辨率
+                s->set_quality(s, 6); // 正常画质
+                delay(100); // 等待设置生效
             }
             startCameraServer();
             cameraIsRunning = true;
