@@ -362,7 +362,8 @@ void loop() {
         // 无人且开摄像头时关闭
         if (cameraIsRunning) {
             Serial.println("Action: Stopping Camera Server...");
-            stopCameraServer();
+            // stopCameraServer();
+
             cameraIsRunning = false;
         }
         if (ledState) {
