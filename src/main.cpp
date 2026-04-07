@@ -104,15 +104,23 @@ void pubSensors() {
 }
 void startCameraServer();
 void stopCameraServer() {
-    if (stream_httpd) {
-        httpd_stop(stream_httpd);
-        stream_httpd = NULL;
+    if (cameraIsRunning) {
+        // 先停止HTTP服务器
+        if (stream_httpd) {
+            httpd_stop(stream_httpd);
+            stream_httpd = NULL;
+        }
+        if (camera_httpd) {
+            httpd_stop(camera_httpd);
+            camera_httpd = NULL;
+        }
+        
+        // 释放摄像头资源
+        esp_camera_deinit();
+        
+        cameraIsRunning = false;
+        Serial.println("Camera Server Stopped and resources released.");
     }
-    if (camera_httpd) {
-        httpd_stop(camera_httpd);
-        camera_httpd = NULL;
-    }
-    Serial.println("Camera Server Stopped.");
 }
 camera_config_t config;
 void camera_init() {
@@ -330,6 +338,7 @@ void loop() {
         // 有人且关摄像头时开启
         if (!cameraIsRunning) {
             Serial.println("Action: Starting Camera Server...");
+            camera_init(); // 重新初始化摄像头
             startCameraServer();
             cameraIsRunning = true;
         }
@@ -362,9 +371,7 @@ void loop() {
         // 无人且开摄像头时关闭
         if (cameraIsRunning) {
             Serial.println("Action: Stopping Camera Server...");
-            // stopCameraServer();
-
-            cameraIsRunning = false;
+            stopCameraServer(); // 使用优化后的停止函数
         }
         if (ledState) {
             digitalWrite(LED_PIN, LOW);
