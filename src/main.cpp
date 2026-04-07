@@ -114,10 +114,10 @@ void stopCameraServer() {
             httpd_stop(camera_httpd);
             camera_httpd = NULL;
         }
-        
+
         // 释放摄像头资源
         esp_camera_deinit();
-        
+
         cameraIsRunning = false;
         Serial.println("Camera Server Stopped and resources released.");
     }
